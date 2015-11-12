@@ -1,9 +1,14 @@
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import sys
+from matplotlib.backend_bases import KeyEvent, MouseEvent
+from math import ceil
+from stl import mesh
 
 MARGIN = 0.02
-INFLATION = 1.5
+INITIAL_INFLATION = 1.5
+RESOLUTION = 10
 
 def real_to_ref(min, max, x, margin):
     return margin + (1.0 - 2*margin) * (x - min) / (max - min)
@@ -69,6 +74,18 @@ def dem_parse(spec, s, init):
 
     return res
 
+class Progress:
+    def __init__(self):
+        self.n = 0
+
+    def __call__(self, message, end=False):
+        sys.stdout.write('\r' + ' '*self.n)
+        sys.stdout.write('\r' + message)
+        if end:
+            sys.stdout.write('\n')
+        sys.stdout.flush()
+        self.n = len(message)
+
 class DEMFile:
     def __init__(self, fn, out=False):
         with open(fn, 'rb') as f:
@@ -78,8 +95,11 @@ class DEMFile:
         self.data = []
 
         init = 1024
-        for _ in range(0, self.size):
+        p = Progress()
+        for i in range(0, self.size):
+            p('{}: reading profile {}/{}'.format(fn, i+1, self.size))
             init = self._load_data(s, init)
+        p('{}: finished'.format(fn), end=True)
 
         self.data = np.rot90(np.array(self.data))
 
@@ -90,11 +110,16 @@ class DEMFile:
         north = real_to_ref(box[2], box[3], self.north, MARGIN)
 
         ax = fig.add_axes((east, south, west-east, north-south))
-        ax.imshow(self.data, cmap='bwr', aspect='auto',
+        ax.imshow(self.data, cmap='terrain', aspect='auto',
                   extent=(self.east, self.west,
                           self.south, self.north),
                   vmin=vmin, vmax=vmax)
         ax.axis('off')
+
+    def elevation(self, point):
+        row = (1 - real_to_ref(self.south, self.north, point[1], 0.0)) * (self.data.shape[0] - 1)
+        col = real_to_ref(self.east, self.west, point[0], 0.0) * (self.data.shape[1] - 1)
+        return self.data[round(row), round(col)]
 
     def _load_record_a(self, s, out):
         spec = [
@@ -183,33 +208,111 @@ class DEMFile:
 
 class ClickHandler:
 
-    def __init__(self, ax, box):
+    def __init__(self, files, ax, box):
+        self.files = files
         self.center = None
         self.corner = None
+        self.inflation = INITIAL_INFLATION
         self.ax = ax
         self.box = box
 
-    def __call__(self, event):
+    def _handle_mouse(self, event):
         if event.button == 1:
-            self.center = np.array((event.xdata, event.ydata))
-        elif event.button == 3:
             self.corner = np.array((event.xdata, event.ydata))
+        elif event.button == 3:
+            self.center = np.array((event.xdata, event.ydata))
+        elif event.button in ['up', 'down']:
+            self.inflation += event.step / 50
+            self.inflation = max(1.0, self.inflation)
+
+    def _handle_key(self, event):
+        if event.key == 'e':
+            self._export_sdl()
+        elif event.key == 'q':
+            sys.exit(0)
+
+    def _export_sdl(self):
+        se, ne, nw, sw = compute_box(self.center, self.corner, self.box, MARGIN, self.inflation)
+        r = sw - se
+        u = ne - se
+        lmin = 0.5 * (1 - 1 / self.inflation)
+        lmax = 0.5 * (1 + 1 / self.inflation)
+
+        lr = np.linalg.norm(ref_to_real_a(self.box, sw, MARGIN) -
+                            ref_to_real_a(self.box, se, MARGIN))
+        nr = int(ceil(lr / RESOLUTION))
+        lu = np.linalg.norm(ref_to_real_a(self.box, ne, MARGIN) -
+                            ref_to_real_a(self.box, se, MARGIN))
+        nu = int(ceil(lu / RESOLUTION))
+        print lr/1000, nr, lu/1000, nu
+
+        def coords(i, j):
+            ref = se + float(i)/nr * r + float(j)/nu * u
+            real = ref_to_real_a(self.box, ref, MARGIN)
+            return np.array([real[0], real[1], self.files.elevation_at_ref(ref)])
+
+        data = np.zeros((nr, nu, 2), dtype=mesh.Mesh.dtype)
+        p = Progress()
+        for i in range(0, nr):
+            p('Evaluating profile {}/{}'.format(i+1, nr+1))
+            for j in range(0, nu):
+                if i == 0 and j == 0:
+                    pt00 = coords(i, j)
+                    pt10 = coords(i+1, j)
+                    pt01 = coords(i, j+1)
+                    pt11 = coords(i+1, j+1)
+                elif i == 0:
+                    pt00 = data['vectors'][i,j-1,1][2,:]
+                    pt10 = data['vectors'][i,j-1,1][1,:]
+                    pt01 = coords(i, j+1)
+                    pt11 = coords(i+1, j+1)
+                elif j == 0:
+                    pt00 = data['vectors'][i-1,j,1][0,:]
+                    pt10 = coords(i+1, j)
+                    pt01 = data['vectors'][i-1,j,1][1,:]
+                    pt11 = coords(i+1, j+1)
+                else:
+                    pt00 = data['vectors'][i-1,j,1][0,:]
+                    pt10 = data['vectors'][i,j-1,1][1,:]
+                    pt01 = data['vectors'][i-1,j,1][1,:]
+                    pt11 = coords(i+1, j+1)
+
+                data['vectors'][i,j,0][0,:] = pt00
+                data['vectors'][i,j,0][1,:] = pt10
+                data['vectors'][i,j,0][2,:] = pt01
+                data['vectors'][i,j,1][0,:] = pt10
+                data['vectors'][i,j,1][1,:] = pt11
+                data['vectors'][i,j,1][2,:] = pt01
+
+        p('Done', end=True)
+        data = np.reshape(data, (nr*nu*2,))
+        m = mesh.Mesh(data, remove_empty_areas=False)
+        m.save('out.stl')
+
+    def __call__(self, event):
+        if isinstance(event, MouseEvent):
+            self._handle_mouse(event)
+        elif isinstance(event, KeyEvent):
+            self._handle_key(event)
 
         self.ax.lines = []
-        if self.center is not None:
-            self.ax.plot([self.center[0]], [self.center[1]], marker='o', color='green')
-        if self.corner is not None:
-            self.ax.plot([self.corner[0]], [self.corner[1]], marker='o', color='yellow')
         if self.center is not None and self.corner is not None:
             se, ne, nw, sw = compute_box(self.center, self.corner, self.box, MARGIN)
             self.ax.plot([se[0], ne[0], nw[0], sw[0], se[0]],
                          [se[1], ne[1], nw[1], sw[1], se[1]],
-                         color='yellow')
-
-            se, ne, nw, sw = compute_box(self.center, self.corner, self.box, MARGIN, INFLATION)
+                         color='black', linestyle='--', linewidth=2.0)
+            se, ne, nw, sw = compute_box(self.center, self.corner, self.box, MARGIN, self.inflation)
             self.ax.plot([se[0], ne[0], nw[0], sw[0], se[0]],
                          [se[1], ne[1], nw[1], sw[1], se[1]],
-                         color='orange')
+                         color='black', linestyle='--', linewidth=2.0)
+
+        if self.center is not None:
+            self.ax.plot([self.center[0]], [self.center[1]],
+                         marker='o', markersize=8.0, color='black')
+        if self.corner is not None:
+            color = 'white' if self.inflation > 1.0 else 'red'
+            self.ax.plot([self.corner[0]], [self.corner[1]],
+                         marker='o', markersize=8.0, color=color)
 
         self.ax.figure.canvas.draw()
 
@@ -228,42 +331,43 @@ class DEMFiles:
         self.vmin = min(np.amin(f.data) for f in self.files)
         self.vmax = max(np.amax(f.data) for f in self.files)
 
+    def elevation_at_ref(self, ref):
+        real = ref_to_real_a(self.box, ref, MARGIN)
+        elevation = None
+        for f in self.files:
+            if f.east <= real[0] <= f.west and f.south <= real[1] <= f.north:
+                elevation = f.elevation(real)
+                if elevation:
+                    break
+        return elevation
+
     def show(self):
         self._compute_bounds()
         mpl.use('Qt5Agg')
 
-        fig = plt.figure()
+        fig = plt.figure(figsize=(10,10))
 
         for f in self.files:
             f.plot(fig, self.box, self.vmin, self.vmax)
-        # ax = fig.add_axes((0.02,0.02,0.96,0.96))
-        # self.files[0].plot(ax)
 
         overlay = fig.add_axes((0,0,1,1))
         overlay.axis('off')
         overlay.set_xlim(0, 1)
         overlay.set_ylim(0, 1)
 
-        handler = ClickHandler(overlay, self.box)
+        handler = ClickHandler(self, overlay, self.box)
 
-        cid = fig.canvas.mpl_connect('button_press_event', handler)
+        for event in ['button_press_event',
+                      'scroll_event',
+                      'key_press_event']:
+            cid = fig.canvas.mpl_connect(event, handler)
 
         fig.show()
+        # fig.savefig('out.png', dpi=500)
 
 
-# dem = DEMFile('7002_2_10m_z33.dem', True)
-# files = DEMFiles(dem)
-# files.show()
-
-dem1 = DEMFile('6904_1_10m_z32.dem')
-print 'Loaded 1'
-dem2 = DEMFile('6904_2_10m_z32.dem')
-print 'Loaded 2'
-dem3 = DEMFile('6904_3_10m_z32.dem')
-print 'Loaded 3'
-dem4 = DEMFile('6904_4_10m_z32.dem')
-print 'Loaded 4'
-files = DEMFiles(dem1, dem2, dem3, dem4)
-files.show()
-
-input()
+if __name__ == '__main__':
+    dems = [DEMFile(fn) for fn in sys.argv[1:]]
+    files = DEMFiles(*dems)
+    files.show()
+    input()
