@@ -3,7 +3,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import sys
 from matplotlib.backend_bases import KeyEvent, MouseEvent
-from math import ceil
+from math import ceil, exp
 from stl import mesh
 
 MARGIN = 0.02
@@ -246,16 +246,31 @@ class ClickHandler:
         nu = int(ceil(lu / RESOLUTION))
         print lr/1000, nr, lu/1000, nu
 
+        def bump(x):
+            if lmin <= x <= lmax:
+                return 1.0
+            elif 0 < x < lmin:
+                return exp(1-1.0/(1 - ((x-lmin)/lmin)**2))
+            elif lmax < x < 1:
+                return exp(1-1.0/(1 - ((x-lmax)/(1-lmax))**2))
+            return 0.0
+
+        rbump = [bump(float(j)/nr) for j in range(nr+1)]
+        ubump = [bump(float(j)/nu) for j in range(nu+1)]
+
         def coords(i, j):
-            ref = se + float(i)/nr * r + float(j)/nu * u
+            ip = float(i)/nr
+            jp = float(j)/nu
+            ref = se + ip*r + jp*u
             real = ref_to_real_a(self.box, ref, MARGIN)
-            return np.array([real[0], real[1], self.files.elevation_at_ref(ref)])
+            elevation = self.files.elevation_at_ref(ref) * rbump[i] * ubump[j]
+            return np.array([real[0], real[1], elevation])
 
         data = np.zeros((nr, nu, 2), dtype=mesh.Mesh.dtype)
         p = Progress()
-        for i in range(0, nr):
+        for i in range(nr):
             p('Evaluating profile {}/{}'.format(i+1, nr+1))
-            for j in range(0, nu):
+            for j in range(nu):
                 if i == 0 and j == 0:
                     pt00 = coords(i, j)
                     pt10 = coords(i+1, j)
