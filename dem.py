@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -17,6 +20,10 @@ def real_to_ref_a(box, x, margin):
     return np.array((real_to_ref(box[0], box[1], x[0], margin),
                      real_to_ref(box[2], box[3], x[1], margin)))
 
+def real_to_ref_db(box, x, y, margin):
+    return (real_to_ref(box[0], box[1], x, margin),
+            real_to_ref(box[2], box[3], y, margin))
+
 def ref_to_real(min, max, x, margin):
     result = (x - margin) / (1.0 - 2*margin) * (max - min) + min
     return result
@@ -24,6 +31,10 @@ def ref_to_real(min, max, x, margin):
 def ref_to_real_a(box, x, margin):
     return np.array((ref_to_real(box[0], box[1], x[0], margin),
                      ref_to_real(box[2], box[3], x[1], margin)))
+
+def ref_to_real_db(box, x, y, margin):
+    return (ref_to_real(box[0], box[1], x, margin),
+            ref_to_real(box[2], box[3], y, margin))
 
 def compute_box(center, corner, box, margin, scale=1.0):
     center = ref_to_real_a(box, center, margin)
@@ -116,14 +127,20 @@ class DEMFile:
                   vmin=vmin, vmax=vmax)
         ax.axis('off')
 
-    def elevation(self, point):
-        x = (1 - real_to_ref(self.south, self.north, point[1], 0.0)) * (self.data.shape[0] - 1)
-        y = real_to_ref(self.east, self.west, point[0], 0.0) * (self.data.shape[1] - 1)
+    def elevation(self, xpts, ypts):
+        i = (1 - real_to_ref(self.south, self.north, ypts, 0.0)) * (self.data.shape[0] - 1)
+        j = real_to_ref(self.east, self.west, xpts, 0.0) * (self.data.shape[1] - 1)
 
-        return (self.data[floor(x), floor(y)] * (1 - (x % 1)) * (1 - (y % 1)) +
-                self.data[floor(x), ceil(y)] * (1 - (x % 1)) * (y % 1) +
-                self.data[ceil(x), floor(y)] * (x % 1) * (1 - (y % 1)) +
-                self.data[ceil(x), ceil(y)] * (x % 1) * (y % 1))
+        ir = np.floor(i).astype(int)
+        jr = np.floor(j).astype(int)
+
+        ir[np.nonzero(ir == (self.data.shape[0] - 1))] -= 1
+        jr[np.nonzero(jr == (self.data.shape[1] - 1))] -= 1
+
+        return (self.data[ir, jr] * (1 - (i - ir)) * (1 - (j - jr)) +
+                self.data[ir+1, jr] * (i - ir) * (1 - (j - jr)) +
+                self.data[ir, jr+1] * (1 - (i - ir)) * (j - jr) +
+                self.data[ir+1, jr+1] * (i - ir) * (j - jr))
 
     def _load_record_a(self, s, out):
         spec = [
@@ -248,54 +265,35 @@ class ClickHandler:
         lu = np.linalg.norm(ref_to_real_a(self.box, ne, MARGIN) -
                             ref_to_real_a(self.box, se, MARGIN))
         nu = int(ceil(lu / RESOLUTION))
-        print lr/1000, nr, lu/1000, nu
 
-        def bump(x):
-            if lmin <= x <= lmax:
-                return 1.0
-            elif 0 < x < lmin:
-                return exp(1-1.0/(1 - ((x-lmin)/lmin)**2))
-            elif lmax < x < 1:
-                return exp(1-1.0/(1 - ((x-lmax)/(1-lmax))**2))
-            return 0.0
+        ip = np.linspace(0, nr, nr+1) / nr
+        jp = np.linspace(0, nu, nu+1) / nu
+        xpts = se[0] + np.reshape(jp, (nr+1,1)) * r[0] + np.reshape(ip, (1,nu+1)) * u[0]
+        ypts = se[1] + np.reshape(jp, (nr+1,1)) * r[1] + np.reshape(ip, (1,nu+1)) * u[1]
+        xpts, ypts = ref_to_real_db(self.box, xpts, ypts, MARGIN)
+        elevation = self.files.elevation(xpts, ypts)
 
-        rbump = [bump(float(j)/nr) for j in range(nr+1)]
-        ubump = [bump(float(j)/nu) for j in range(nu+1)]
+        # def bump(x):
+        #     if lmin <= x <= lmax:
+        #         return 1.0
+        #     elif 0 < x < lmin:
+        #         return exp(1-1.0/(1 - ((x-lmin)/lmin)**2))
+        #     elif lmax < x < 1:
+        #         return exp(1-1.0/(1 - ((x-lmax)/(1-lmax))**2))
+        #     return 0.0
 
-        def coords(i, j):
-            ip = float(i)/nr
-            jp = float(j)/nu
-            ref = se + ip*r + jp*u
-            real = ref_to_real_a(self.box, ref, MARGIN)
-            elevation = self.files.elevation_at_ref(ref) * rbump[i] * ubump[j]
-            return np.array([real[0], real[1], elevation])
+        # rbump = [bump(float(j)/nr) for j in range(nr+1)]
+        # ubump = [bump(float(j)/nu) for j in range(nu+1)]
 
         data = np.zeros((nr, nu, 2), dtype=mesh.Mesh.dtype)
-        p = Progress()
+        # p = Progress()
         for i in range(nr):
-            p('Evaluating profile {}/{}'.format(i+1, nr+1))
+        #     p('Evaluating profile {}/{}'.format(i+1, nr+1))
             for j in range(nu):
-                if i == 0 and j == 0:
-                    pt00 = coords(i, j)
-                    pt10 = coords(i+1, j)
-                    pt01 = coords(i, j+1)
-                    pt11 = coords(i+1, j+1)
-                elif i == 0:
-                    pt00 = data['vectors'][i,j-1,1][2,:]
-                    pt10 = data['vectors'][i,j-1,1][1,:]
-                    pt01 = coords(i, j+1)
-                    pt11 = coords(i+1, j+1)
-                elif j == 0:
-                    pt00 = data['vectors'][i-1,j,1][0,:]
-                    pt10 = coords(i+1, j)
-                    pt01 = data['vectors'][i-1,j,1][1,:]
-                    pt11 = coords(i+1, j+1)
-                else:
-                    pt00 = data['vectors'][i-1,j,1][0,:]
-                    pt10 = data['vectors'][i,j-1,1][1,:]
-                    pt01 = data['vectors'][i-1,j,1][1,:]
-                    pt11 = coords(i+1, j+1)
-
+                pt00 = [xpts[i,j], ypts[i,j], elevation[i,j]]
+                pt10 = [xpts[i+1,j], ypts[i+1,j], elevation[i+1,j]]
+                pt01 = [xpts[i,j+1], ypts[i,j+1], elevation[i,j+1]]
+                pt11 = [xpts[i+1,j+1], ypts[i+1,j+1], elevation[i+1,j+1]]
                 data['vectors'][i,j,0][0,:] = pt00
                 data['vectors'][i,j,0][1,:] = pt10
                 data['vectors'][i,j,0][2,:] = pt01
@@ -303,10 +301,10 @@ class ClickHandler:
                 data['vectors'][i,j,1][1,:] = pt11
                 data['vectors'][i,j,1][2,:] = pt01
 
-        p('Done', end=True)
         data = np.reshape(data, (nr*nu*2,))
         m = mesh.Mesh(data, remove_empty_areas=False)
         m.save('out.stl')
+        print('Mesh size: {}×{} points, {:.2f}×{:.2f} km²'.format(nr, nu, lr/1000, lu/1000))
 
     def __call__(self, event):
         if isinstance(event, MouseEvent):
@@ -350,14 +348,20 @@ class DEMFiles:
         self.vmin = min(np.amin(f.data) for f in self.files)
         self.vmax = max(np.amax(f.data) for f in self.files)
 
-    def elevation_at_ref(self, ref):
-        real = ref_to_real_a(self.box, ref, MARGIN)
-        elevation = None
+    def elevation(self, xpts, ypts):
+        elevation = np.zeros(xpts.shape)
+        found = np.zeros(xpts.shape, dtype=bool)
+
         for f in self.files:
-            if f.east <= real[0] <= f.west and f.south <= real[1] <= f.north:
-                elevation = f.elevation(real)
-                if elevation:
-                    break
+            flags = np.logical_and(
+                np.logical_and(f.east <= xpts, xpts <= f.west),
+                np.logical_and(f.south <= ypts, ypts <= f.north),
+            )
+            found = np.logical_or(found, flags)
+
+            i, j = np.nonzero(flags)
+            elevation[i,j] = f.elevation(xpts[i,j], ypts[i,j])
+
         return elevation
 
     def show(self):
