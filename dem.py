@@ -3,7 +3,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import sys
 from matplotlib.backend_bases import KeyEvent, MouseEvent
-from math import ceil, exp
+from math import ceil, floor, exp
 from stl import mesh
 
 MARGIN = 0.02
@@ -117,9 +117,13 @@ class DEMFile:
         ax.axis('off')
 
     def elevation(self, point):
-        row = (1 - real_to_ref(self.south, self.north, point[1], 0.0)) * (self.data.shape[0] - 1)
-        col = real_to_ref(self.east, self.west, point[0], 0.0) * (self.data.shape[1] - 1)
-        return self.data[round(row), round(col)]
+        x = (1 - real_to_ref(self.south, self.north, point[1], 0.0)) * (self.data.shape[0] - 1)
+        y = real_to_ref(self.east, self.west, point[0], 0.0) * (self.data.shape[1] - 1)
+
+        return (self.data[floor(x), floor(y)] * (1 - (x % 1)) * (1 - (y % 1)) +
+                self.data[floor(x), ceil(y)] * (1 - (x % 1)) * (y % 1) +
+                self.data[ceil(x), floor(y)] * (x % 1) * (1 - (y % 1)) +
+                self.data[ceil(x), ceil(y)] * (x % 1) * (y % 1))
 
     def _load_record_a(self, s, out):
         spec = [
