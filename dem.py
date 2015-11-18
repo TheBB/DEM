@@ -273,22 +273,22 @@ class ClickHandler:
         xpts, ypts = ref_to_real_db(self.box, xpts, ypts, MARGIN)
         elevation = self.files.elevation(xpts, ypts)
 
-        # def bump(x):
-        #     if lmin <= x <= lmax:
-        #         return 1.0
-        #     elif 0 < x < lmin:
-        #         return exp(1-1.0/(1 - ((x-lmin)/lmin)**2))
-        #     elif lmax < x < 1:
-        #         return exp(1-1.0/(1 - ((x-lmax)/(1-lmax))**2))
-        #     return 0.0
+        def bump(x):
+            if lmin <= x <= lmax:
+                return 1.0
+            elif 0 < x < lmin:
+                return exp(1-1.0/(1 - ((x-lmin)/lmin)**2))
+            elif lmax < x < 1:
+                return exp(1-1.0/(1 - ((x-lmax)/(1-lmax))**2))
+            return 0.0
 
-        # rbump = [bump(float(j)/nr) for j in range(nr+1)]
-        # ubump = [bump(float(j)/nu) for j in range(nu+1)]
+        rbump = np.array([bump(float(j)/nr) for j in range(nr+1)])
+        ubump = np.array([bump(float(j)/nu) for j in range(nu+1)])
+        elevation *= np.reshape(rbump, (nr+1,1))
+        elevation *= np.reshape(ubump, (1,nu+1))
 
         data = np.zeros((nr, nu, 2), dtype=mesh.Mesh.dtype)
-        # p = Progress()
         for i in range(nr):
-        #     p('Evaluating profile {}/{}'.format(i+1, nr+1))
             for j in range(nu):
                 pt00 = [xpts[i,j], ypts[i,j], elevation[i,j]]
                 pt10 = [xpts[i+1,j], ypts[i+1,j], elevation[i+1,j]]
