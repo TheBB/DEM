@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import argparse
+import h5py
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -8,10 +10,17 @@ import sys
 from matplotlib.backend_bases import KeyEvent, MouseEvent
 from math import ceil, floor, exp
 from stl import mesh
+from os.path import basename
 
 MARGIN = 0.02
 INITIAL_INFLATION = 1.5
 RESOLUTION = 10
+
+def chunks(l, n, m):
+    i = 0
+    for _ in range(0, m):
+        yield l[i:i+n]
+        i += n
 
 def real_to_ref(min, max, x, margin):
     return margin + (1.0 - 2*margin) * (x - min) / (max - min)
@@ -98,21 +107,45 @@ class Progress:
         self.n = len(message)
 
 class DEMFile:
-    def __init__(self, fn, out=False):
+    def __init__(self, fn, submap=None, out=False):
+        if isinstance(fn, str):
+            self._from_dem(fn, out)
+        elif isinstance(fn, h5py.File):
+            self._from_hdf5(fn, submap)
+
+    def _from_dem(self, fn, out):
         with open(fn, 'rb') as f:
             s = f.read()
         self._load_record_a(s[:1024], out)
         self._check()
         self.data = []
+        self.file_name = basename(fn).split('.')[0]
 
         init = 1024
         p = Progress()
         for i in range(0, self.size):
             p('{}: reading profile {}/{}'.format(fn, i+1, self.size))
             init = self._load_data(s, init)
-        p('{}: finished'.format(fn), end=True)
 
         self.data = np.rot90(np.array(self.data))
+
+        p('{}: finished ({}×{})'.format(fn, *self.data.shape), end=True)
+
+    def _from_hdf5(self, f, submap):
+        candidates = [g for g in f['maps'] if g.startswith(submap)]
+        assert len(candidates) == 1
+        grp = f['maps'][candidates[0]]
+
+        self.data = grp['data'][()]
+        for v in ['east', 'south', 'north', 'west']:
+            setattr(self, v, grp[v][()])
+
+    def push_to_hdf5(self, f):
+        maps = f.require_group('maps')
+        grp = maps.require_group(self.file_name)
+
+        for v in ['data', 'east', 'south', 'north', 'west']:
+            grp[v] = getattr(self, v)
 
     def plot(self, fig, box, vmin, vmax):
         east = real_to_ref(box[0], box[1], self.east, MARGIN)
@@ -189,19 +222,33 @@ class DEMFile:
         size = params['points'][0]
         pos = params['pos'][1]
 
-        data = [int(v)*self.resolution[2] + params['local']
-                for v in s[init+144:init+1024].decode().split()]
+        data = []
+        for v in chunks(s[init+144:init+1024].decode(), 6, 146):
+            try:
+                data.append(int(v))
+            except ValueError:
+                break
         while len(data) < size:
             init += 1024
-            data.extend(int(v)*self.resolution[2] + params['local']
-                        for v in s[init:init+1024].decode().split())
+            for v in chunks(s[init:init+1024].decode(), 6, 170):
+                try:
+                    data.append(int(v))
+                except ValueError:
+                    break
 
+        data = [(0 if v == -32767 else v) * self.resolution[2] + params['local']
+                for v in data]
         assert(len(data) == size)
 
-        # print('Found profile at {} with {} asserted and {} real data points ({:.2f} to {:.2f})'.format(
-        #     pos, size, len(data), min(data), max(data)))
-        self.data.append(data)
+        if data:
+            npts_before = (params['initial'][1] - self.south) / self.resolution[1]
+            npts_after = (self.north - params['initial'][1]) / self.resolution[1] - size + 1
+            data = [data[0]]*int(npts_before) + data + [data[-1]]*int(npts_after)
+        else:
+            npts = (self.north - self.south) / self.resolution[1] + 1
+            data = [0.0]*int(npts)
 
+        self.data.append(data)
         return init + 1024
 
     def _check(self):
@@ -215,7 +262,7 @@ class DEMFile:
         assert self.corners[0] == self.corners[2] < self.corners[4] == self.corners[6]
         assert self.corners[1] == self.corners[7] < self.corners[3] == self.corners[5]
         assert len(self.elevations) == 2
-        assert self.elevations[0] < self.elevations[1]
+        assert self.elevations[0] <= self.elevations[1]
         assert self.reference_angle == 0.0
         assert len(self.size) == 2
         assert self.size[0] == 1
@@ -390,7 +437,27 @@ class DEMFiles:
 
 
 if __name__ == '__main__':
-    dems = [DEMFile(fn) for fn in sys.argv[1:]]
-    files = DEMFiles(*dems)
-    files.show()
-    input()
+    parser = argparse.ArgumentParser('dem.py')
+
+    parser.add_argument('--verbose', '-v', required=False, default=False,
+                        action='store_true', help='Verbose')
+    parser.add_argument('--store', metavar='fn', required=False, help='Store to HDF5 file')
+    parser.add_argument('--hdf5', '-5', metavar='file', required=False, help='Get data from HDF5')
+    parser.add_argument('files', metavar='file', nargs='+', help='DEM files or map IDs')
+
+    args = parser.parse_args(sys.argv[1:])
+
+    if args.hdf5:
+        with h5py.File(args.hdf5, 'r') as f:
+            dems = [DEMFile(f, submap=fn, out=args.verbose) for fn in args.files]
+    else:
+        dems = [DEMFile(fn, out=args.verbose) for fn in args.files]
+
+    if args.store:
+        with h5py.File(args.store) as f:
+            for d in dems:
+                d.push_to_hdf5(f)
+    else:
+        files = DEMFiles(*dems)
+        files.show()
+        input()
