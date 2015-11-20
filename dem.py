@@ -10,11 +10,13 @@ import sys
 from matplotlib.backend_bases import KeyEvent, MouseEvent
 from math import ceil, floor, exp
 from stl import mesh
+from os import rename
 from os.path import basename
 
 MARGIN = 0.02
 INITIAL_INFLATION = 1.5
-RESOLUTION = 10
+RESOLUTION = 10.0
+OUTPUT = 'out.stl'
 
 def chunks(l, n, m):
     i = 0
@@ -283,6 +285,25 @@ class ClickHandler:
         self.inflation = INITIAL_INFLATION
         self.ax = ax
         self.box = box
+        self.output = []
+
+        parts = OUTPUT.split('.')
+        self.pattern = '.'.join(parts[:-1]) + '{:0{}}.' + parts[-1]
+
+    def _get_next_filename(self):
+        if not self.output:
+            return OUTPUT
+
+        next_num = len(self.output) + 1
+        ndigits = len(str(next_num))
+        if ndigits > len(str(len(self.output))) or len(self.output) == 1:
+            new_output = [self.pattern.format(i+1, ndigits)
+                          for i in range(len(self.output))]
+            for old, new in zip(self.output, new_output):
+                rename(old, new)
+            self.output = new_output
+
+        return self.pattern.format(next_num, ndigits)
 
     def _handle_mouse(self, event):
         if event.button == 1:
@@ -296,10 +317,15 @@ class ClickHandler:
     def _handle_key(self, event):
         if event.key == 'e':
             self._export_sdl()
+        elif event.key == 'y':
+            self._export_sdl(print_res=True)
         elif event.key == 'q':
+            if self.output:
+                print('Final output:')
+                print(', '.join(self.output))
             sys.exit(0)
 
-    def _export_sdl(self):
+    def _export_sdl(self, print_res=False):
         se, ne, nw, sw = compute_box(self.center, self.corner, self.box, MARGIN, self.inflation)
         r = sw - se
         u = ne - se
@@ -312,6 +338,10 @@ class ClickHandler:
         lu = np.linalg.norm(ref_to_real_a(self.box, ne, MARGIN) -
                             ref_to_real_a(self.box, se, MARGIN))
         nu = int(ceil(lu / RESOLUTION))
+
+        if print_res:
+            print('Mesh size: {}×{} points, {:.2f}×{:.2f} km²'.format(nr, nu, lr/1000, lu/1000))
+            return
 
         ip = np.linspace(0, nr, nr+1) / nr
         jp = np.linspace(0, nu, nu+1) / nu
@@ -350,8 +380,12 @@ class ClickHandler:
 
         data = np.reshape(data, (nr*nu*2,))
         m = mesh.Mesh(data, remove_empty_areas=False)
-        m.save('out.stl')
-        print('Mesh size: {}×{} points, {:.2f}×{:.2f} km²'.format(nr, nu, lr/1000, lu/1000))
+
+        fn = self._get_next_filename()
+        m.save(fn)
+        self.output.append(fn)
+        print('Mesh size: {}×{} points, {:.2f}×{:.2f} km² => {}'.
+              format(nr, nu, lr/1000, lu/1000, fn))
 
     def __call__(self, event):
         if isinstance(event, MouseEvent):
@@ -439,6 +473,8 @@ class DEMFiles:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('dem.py')
 
+    parser.add_argument('--resolution', '-r', required=False, default=10.0, type=float)
+    parser.add_argument('--out', '-o', required=False, default='out.stl')
     parser.add_argument('--verbose', '-v', required=False, default=False,
                         action='store_true', help='Verbose')
     parser.add_argument('--store', metavar='fn', required=False, help='Store to HDF5 file')
@@ -446,6 +482,9 @@ if __name__ == '__main__':
     parser.add_argument('files', metavar='file', nargs='+', help='DEM files or map IDs')
 
     args = parser.parse_args(sys.argv[1:])
+
+    RESOLUTION = args.resolution
+    OUTPUT = args.out
 
     if args.hdf5:
         with h5py.File(args.hdf5, 'r') as f:
