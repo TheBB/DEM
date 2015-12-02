@@ -364,24 +364,22 @@ class ClickHandler:
         elevation *= np.reshape(rbump, (nr+1,1))
         elevation *= np.reshape(ubump, (1,nu+1))
 
-        data = np.zeros((nr, nu, 2), dtype=mesh.Mesh.dtype)
-        p = Progress()
+        iis = np.zeros(6*nr*nu, dtype=np.int32)
+        jjs = np.zeros(6*nr*nu, dtype=np.int32)
+        iel = 0
         for i in range(nr):
             for j in range(nu):
-                data['vectors'][i,j,0] = np.array(
-                    [[xpts[i,j], ypts[i,j], elevation[i,j]],
-                     [xpts[i+1,j], ypts[i+1,j], elevation[i+1,j]],
-                     [xpts[i,j+1], ypts[i,j+1], elevation[i,j+1]]])
+                iis[iel:iel+6] = [i, i+1, i, i+1, i+1, i]
+                jjs[iel:iel+6] = [j, j, j+1, j, j+1, j+1]
+                iel += 6
 
-                data['vectors'][i,j,1] = np.array(
-                    [[xpts[i+1,j], ypts[i+1,j], elevation[i+1,j]],
-                     [xpts[i+1,j+1], ypts[i+1,j+1], elevation[i+1,j+1]],
-                     [xpts[i,j+1], ypts[i,j+1], elevation[i,j+1]]])
+        indexes = np.ravel_multi_index((iis, jjs), (nr+1, nu+1))
 
-            p('Writing mesh: %i/%i' % (i+1, nr))
-        p('Finished', end=True)
+        data = np.zeros(nr*nu*2, dtype=mesh.Mesh.dtype)
+        data['vectors'].flat[0::3] = xpts.flat[indexes]
+        data['vectors'].flat[1::3] = ypts.flat[indexes]
+        data['vectors'].flat[2::3] = elevation.flat[indexes]
 
-        data = np.reshape(data, (nr*nu*2,))
         m = mesh.Mesh(data, remove_empty_areas=False)
 
         fn = self._get_next_filename()
