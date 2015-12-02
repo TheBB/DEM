@@ -365,18 +365,21 @@ class ClickHandler:
         elevation *= np.reshape(ubump, (1,nu+1))
 
         data = np.zeros((nr, nu, 2), dtype=mesh.Mesh.dtype)
+        p = Progress()
         for i in range(nr):
             for j in range(nu):
-                pt00 = [xpts[i,j], ypts[i,j], elevation[i,j]]
-                pt10 = [xpts[i+1,j], ypts[i+1,j], elevation[i+1,j]]
-                pt01 = [xpts[i,j+1], ypts[i,j+1], elevation[i,j+1]]
-                pt11 = [xpts[i+1,j+1], ypts[i+1,j+1], elevation[i+1,j+1]]
-                data['vectors'][i,j,0][0,:] = pt00
-                data['vectors'][i,j,0][1,:] = pt10
-                data['vectors'][i,j,0][2,:] = pt01
-                data['vectors'][i,j,1][0,:] = pt10
-                data['vectors'][i,j,1][1,:] = pt11
-                data['vectors'][i,j,1][2,:] = pt01
+                data['vectors'][i,j,0] = np.array(
+                    [[xpts[i,j], ypts[i,j], elevation[i,j]],
+                     [xpts[i+1,j], ypts[i+1,j], elevation[i+1,j]],
+                     [xpts[i,j+1], ypts[i,j+1], elevation[i,j+1]]])
+
+                data['vectors'][i,j,1] = np.array(
+                    [[xpts[i+1,j], ypts[i+1,j], elevation[i+1,j]],
+                     [xpts[i+1,j+1], ypts[i+1,j+1], elevation[i+1,j+1]],
+                     [xpts[i,j+1], ypts[i,j+1], elevation[i,j+1]]])
+
+            p('Writing mesh: %i/%i' % (i+1, nr))
+        p('Finished', end=True)
 
         data = np.reshape(data, (nr*nu*2,))
         m = mesh.Mesh(data, remove_empty_areas=False)
@@ -430,7 +433,7 @@ class DEMFiles:
         self.vmax = max(np.amax(f.data) for f in self.files)
 
     def elevation(self, xpts, ypts):
-        elevation = np.zeros(xpts.shape)
+        elevation = np.zeros(xpts.shape, dtype=np.float32)
         found = np.zeros(xpts.shape, dtype=bool)
 
         for f in self.files:
