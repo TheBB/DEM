@@ -467,8 +467,8 @@ class DEMFiles:
                       'key_press_event']:
             cid = fig.canvas.mpl_connect(event, handler)
 
+        fig.canvas.set_window_title('DEM')
         fig.show()
-        # fig.savefig('out.png', dpi=500)
 
 
 if __name__ == '__main__':
